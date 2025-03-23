@@ -1,0 +1,21 @@
+# Web Framework
+flask==2.3.3
+flask-cors==4.0.0
+gunicorn==21.2.0
+
+# Environment variables
+python-dotenv==1.0.0
+
+# MCP SDK
+mcp==0.5.0
+
+# LLM API
+anthropic==0.21.0
+
+# Async support
+aiohttp==3.9.1
+asyncio==3.4.3
+
+# Utilities
+python-json-logger==2.0.7
+pydantic==2.5.2
