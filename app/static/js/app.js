@@ -4,6 +4,7 @@
  */
 document.addEventListener('DOMContentLoaded', function() {
     // DOM elements
+    setupMarkedOptions();
     const chatMessages = document.getElementById('chat-messages');
     const userInput = document.getElementById('user-input');
     const sendButton = document.getElementById('send-button');
@@ -24,13 +25,12 @@ document.addEventListener('DOMContentLoaded', function() {
         const messageDiv = document.createElement('div');
         messageDiv.classList.add('message');
         messageDiv.classList.add(isUser ? 'user' : 'assistant');
-
+    
         const messageContent = document.createElement('div');
         messageContent.classList.add('message-content');
-
-        // Use DOMPurify to sanitize HTML and marked to render markdown
-        const sanitizedHtml = DOMPurify.sanitize(marked.parse(message));
-        messageContent.innerHTML = sanitizedHtml;
+    
+        // Use our enhanced rendering function
+        messageContent.innerHTML = renderMarkdown(message);
         
         messageDiv.appendChild(messageContent);
         chatMessages.appendChild(messageDiv);
@@ -92,19 +92,17 @@ document.addEventListener('DOMContentLoaded', function() {
 
     /**
      * Add a tool result to the thinking area
-     * @param {string} name - Tool name
-     * @param {Object} args - Tool arguments
+     * @param {string} id - Tool ID
      * @param {Object} result - Tool result
      */
-    function addToolResult(name, args, result) {
+    function addToolResult(id, result) {
         const toolDiv = document.createElement('div');
         toolDiv.className = 'tool-result';
         
-        // Format and display the tool usage
+        // Format and display the tool results
         toolDiv.innerHTML = `
-            <strong>📊 Usando herramienta: ${name}</strong>
-            <div><small>Argumentos: ${JSON.stringify(args)}</small></div>
-            <pre>${JSON.stringify(result, null, 2)}</pre>
+            <strong>📊 Resultado de herramienta (ID: ${id})</strong>
+            <pre>${typeof result === 'string' ? result : JSON.stringify(result, null, 2)}</pre>
         `;
         
         thinkingContent.appendChild(toolDiv);
@@ -113,20 +111,102 @@ document.addEventListener('DOMContentLoaded', function() {
 
     /**
      * Add a tool error to the thinking area
-     * @param {string} name - Tool name
+     * @param {string} id - Tool ID
      * @param {string} error - Error message
      */
-    function addToolError(name, error) {
+    function addToolError(id, error) {
         const errorDiv = document.createElement('div');
         errorDiv.className = 'tool-error';
         
         errorDiv.innerHTML = `
-            <strong>❌ Error en herramienta: ${name}</strong>
+            <strong>❌ Error en herramienta (ID: ${id})</strong>
             <div>${error}</div>
         `;
         
         thinkingContent.appendChild(errorDiv);
         thinkingContent.scrollTop = thinkingContent.scrollHeight;
+    }
+
+    /**
+     * Configure marked options for better handling of responsive content
+     */
+    function setupMarkedOptions() {
+        // Configure Marked options
+        marked.setOptions({
+            breaks: true,               // Allow line breaks without needing two spaces
+            gfm: true,                  // Enable GitHub Flavored Markdown
+            headerIds: false,           // Avoid adding IDs to headers
+            mangle: false,              // Avoid mangling links
+            sanitize: false,            // Don't sanitize here - we use DOMPurify for that
+            smartLists: true,           // Use smarter lists
+            smartypants: true,          // Use typographic smartypants
+            xhtml: false,               // Don't use XHTML
+            
+            // Customize code block rendering to make them responsive
+            renderer: new marked.Renderer()
+        });
+        
+        // Customize table rendering
+        const renderer = new marked.Renderer();
+        
+        // Make tables responsive
+        renderer.table = function(header, body) {
+            return `<div class="table-responsive"><table class="table table-bordered">
+                <thead>${header}</thead>
+                <tbody>${body}</tbody>
+            </table></div>`;
+        };
+        
+        // Customize code block rendering
+        renderer.code = function(code, language) {
+            return `<pre class="code-block"><code class="${language ? `language-${language}` : ''}">${code}</code></pre>`;
+        };
+        
+        // Apply the custom renderer
+        marked.setOptions({ renderer });
+    }
+
+    /**
+     * Preprocess markdown text before rendering
+     * @param {string} markdown - The markdown text to process
+     */
+    function preprocessMarkdown(markdown) {
+        if (!markdown) return '';
+        
+        // Add classes to make tables responsive if there are tables in the content
+        let processed = markdown;
+        
+        // Add classes to code blocks
+        processed = processed.replace(/```(\w+)?\n([\s\S]*?)```/g, function(match, language, code) {
+            return `\`\`\`${language || ''}\n${code}\`\`\``;
+        });
+        
+        // Handle long URLs to avoid overflow
+        processed = processed.replace(/(\b(https?|ftp|file):\/\/[-A-Z0-9+&@#\/%?=~_|!:,.;]*[-A-Z0-9+&@#\/%=~_|])/ig, 
+            '<span class="break-word">$1</span>');
+        
+        return processed;
+    }
+
+    /**
+     * Render markdown to HTML safely
+     * @param {string} markdown - The markdown text to render
+     * @returns {string} - Sanitized HTML
+     */
+    function renderMarkdown(markdown) {
+        // Preprocess markdown
+        const processed = preprocessMarkdown(markdown);
+        
+        // Convert markdown to HTML
+        const html = marked.parse(processed);
+        
+        // Sanitize resulting HTML to prevent XSS
+        return DOMPurify.sanitize(html, {
+            ADD_ATTR: ['target'],
+            ADD_TAGS: ['iframe'],
+            FORBID_TAGS: ['style'],
+            FORBID_ATTR: ['style'],
+        });
     }
 
     /**
@@ -151,103 +231,11 @@ document.addEventListener('DOMContentLoaded', function() {
         // Close existing EventSource if any
         if (eventSource) {
             eventSource.close();
+            eventSource = null;
         }
 
         try {
-            // Create a new EventSource for streaming
-            eventSource = new EventSource('/api/chat');
-            
-            let fullResponse = '';
-            let responseElement = null;
-            
-            // Handle incoming events
-            eventSource.onmessage = function(event) {
-                try {
-                    const data = JSON.parse(event.data);
-                    
-                    switch(data.type) {
-                        case 'start':
-                            // Start of streaming
-                            console.log('Streaming started');
-                            break;
-                            
-                        case 'chunk':
-                            // Text chunk
-                            fullResponse += data.content;
-                            
-                            // Add to thinking content
-                            addThinkingContent(data.content);
-                            
-                            // If this is the first chunk, create the response element
-                            if (!responseElement) {
-                                // Remove typing indicator and create response element
-                                removeTypingIndicator();
-                                responseElement = addMessage(fullResponse);
-                            } else {
-                                // Update existing response element
-                                const messageContent = responseElement.querySelector('.message-content');
-                                messageContent.innerHTML = DOMPurify.sanitize(marked.parse(fullResponse));
-                            }
-                            break;
-                            
-                        case 'tool_result':
-                            // Tool result
-                            addToolResult(data.name, data.arguments, data.result);
-                            break;
-                            
-                        case 'tool_error':
-                            // Tool error
-                            addToolError(data.name, data.error);
-                            break;
-                            
-                        case 'error':
-                            // Error in processing
-                            console.error('Error:', data.message);
-                            removeTypingIndicator();
-                            addMessage('❌ Lo siento, ha ocurrido un error: ' + data.message);
-                            eventSource.close();
-                            break;
-                            
-                        case 'end':
-                            // End of streaming
-                            console.log('Streaming ended');
-                            eventSource.close();
-                            
-                            // Hide thinking area after a delay
-                            setTimeout(() => {
-                                thinkingArea.style.display = 'none';
-                            }, 2000);
-                            
-                            // Re-enable UI
-                            userInput.disabled = false;
-                            sendButton.disabled = false;
-                            userInput.focus();
-                            break;
-                    }
-                } catch (error) {
-                    console.error('Error parsing event data:', error);
-                }
-            };
-            
-            // Handle EventSource errors
-            eventSource.onerror = function(error) {
-                console.error('EventSource error:', error);
-                eventSource.close();
-                eventSource = null;
-                
-                removeTypingIndicator();
-                
-                if (!responseElement) {
-                    addMessage('❌ Lo siento, ha ocurrido un error en la conexión. Por favor, inténtalo de nuevo.');
-                }
-                
-                thinkingArea.style.display = 'none';
-                userInput.disabled = false;
-                sendButton.disabled = false;
-                userInput.focus();
-            };
-            
-            // Send message to server
+            // First send the message to server via POST
             const response = await fetch('/api/chat', {
                 method: 'POST',
                 headers: {
@@ -257,8 +245,124 @@ document.addEventListener('DOMContentLoaded', function() {
             });
             
             if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error || 'Error al enviar mensaje');
+                // If the response is not ok, parse the error message if possible
+                let errorMessage = 'Error al enviar mensaje';
+                try {
+                    const errorData = await response.json();
+                    errorMessage = errorData.error || errorMessage;
+                } catch (parseError) {
+                    errorMessage = `Error (${response.status}): ${response.statusText}`;
+                }
+                throw new Error(errorMessage);
+            }
+            
+            // Start reading the streaming response
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            
+            let fullResponse = '';
+            let responseElement = null;
+            
+            while (true) {
+                const { done, value } = await reader.read();
+                
+                if (done) {
+                    console.log('Stream completed');
+                    break;
+                }
+                
+                // Append new data to buffer
+                buffer += decoder.decode(value, { stream: true });
+                
+                // Process all complete SSE messages in buffer
+                let lines = buffer.split('\n\n');
+                buffer = lines.pop() || ''; // Keep last incomplete message in buffer
+                
+                for (const line of lines) {
+                    if (line.trim() === '' || !line.startsWith('data:')) continue;
+                    
+                    try {
+                        // Extract and parse JSON data
+                        const jsonString = line.replace(/^data:\s*/, '');
+                        const data = JSON.parse(jsonString);
+                        
+                        switch(data.type) {
+                            case 'start':
+                                // Start of streaming
+                                console.log('Streaming started');
+                                break;
+                                
+                            case 'chunk':
+                                // Text chunk
+                                fullResponse += data.content;
+                                
+                                // Add to thinking content
+                                addThinkingContent(data.content);
+                                
+                                // If this is the first chunk, create the response element
+                                if (!responseElement) {
+                                    // Remove typing indicator and create response element
+                                    removeTypingIndicator();
+                                    responseElement = addMessage(fullResponse);
+                                } else {
+                                    // Update existing response element
+                                    const messageContent = responseElement.querySelector('.message-content');
+                                    messageContent.innerHTML = DOMPurify.sanitize(marked.parse(fullResponse));
+                                }
+                                break;
+                                
+                            case 'tool_use':
+                                // Tool usage notification
+                                addThinkingContent(`\n📦 Usando herramienta: ${data.name}\nArgumentos: ${JSON.stringify(data.arguments, null, 2)}\n`);
+                                break;
+                                
+                            case 'tool_result':
+                                // Tool result
+                                addToolResult(data.id || 'unknown', data.result);
+                                break;
+                                
+                            case 'follow_up':
+                                // Follow-up response after tool usage
+                                if (responseElement) {
+                                    // Update existing response element
+                                    const messageContent = responseElement.querySelector('.message-content');
+                                    fullResponse += "\n" + data.content;
+                                    messageContent.innerHTML = DOMPurify.sanitize(marked.parse(fullResponse));
+                                }
+                                break;
+                                
+                            case 'tool_error':
+                                // Tool error
+                                addToolError(data.id || 'unknown', data.error);
+                                break;
+                                
+                            case 'error':
+                                // Error in processing
+                                console.error('Error:', data.message);
+                                removeTypingIndicator();
+                                addMessage('❌ Lo siento, ha ocurrido un error: ' + data.message);
+                                break;
+                                
+                            case 'end':
+                                // End of streaming
+                                console.log('Streaming ended');
+                                
+                                // Hide thinking area after a delay
+                                setTimeout(() => {
+                                    thinkingArea.style.display = 'none';
+                                }, 2000);
+                                
+                                // Re-enable UI
+                                userInput.disabled = false;
+                                sendButton.disabled = false;
+                                userInput.focus();
+                                break;
+                        }
+                    } catch (error) {
+                        console.error('Error parsing event data:', error, line);
+                    }
+                }
             }
             
         } catch (error) {
@@ -322,7 +426,7 @@ Puedes preguntarme sobre:
             userInput.focus();
             
         } catch (error) {
-            console.error('Error al resetear la conversación:', error);
+            console.error('Error resetting conversation:', error);
             alert('Error al resetear la conversación. Por favor, recarga la página.');
         }
     }
